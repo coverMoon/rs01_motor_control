@@ -33,6 +33,23 @@ cmake --build build -j
 
 ## CAN Setup
 
+USB-CAN 每次断电或重新插拔后，`can0` 通常会被重新创建，之前设置的 bitrate 和 up 状态不会保留。
+已经使用脚本把配置流程简化成一条命令：
+
+```bash
+sudo ./scripts/setup_can.sh
+```
+
+默认配置 `can0`，波特率 `1000000`。如果接口名或波特率不同：
+
+```bash
+sudo ./scripts/setup_can.sh can1 1000000
+```
+
+脚本内部等价于执行 `down -> set bitrate -> up -> show details`，适合每次重新插 USB-CAN 后快速恢复。
+
+手动配置流程如下：
+
 ```bash
 ip link
 lsusb
