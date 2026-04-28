@@ -1,5 +1,6 @@
 #include "rs01_motor/can_socket.h"
 
+#include <cerrno>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -170,6 +171,9 @@ bool CanSocket::receive(can_frame &frame, int timeout_ms) {
   // 使用 select() 做毫秒级超时等待，不需要把 socket 改成非阻塞模式。
   int ready = select(fd_ + 1, &read_set, nullptr, nullptr, &timeout);
   if (ready < 0) {
+    if (errno == EINTR) {
+      return false;
+    }
     throw std::runtime_error("failed while waiting for CAN frame");
   }
   if (ready == 0) {

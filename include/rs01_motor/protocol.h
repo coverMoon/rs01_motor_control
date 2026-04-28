@@ -9,8 +9,8 @@ namespace rs01 {
 // 通信类型
 // -----------------------------------------------------------------------------
 
-// RS01 私有协议把“通信类型”放在扩展帧 CAN ID 的高位，用来区分运控、
-// 使能、参数读写、反馈、故障上报等不同帧类型。
+// RS01 私有协议通信类型字段，位于扩展帧 CAN ID 的 bits 28..24。
+// 这里仅保留当前库已使用的帧类型。
 namespace comm {
 constexpr uint32_t kMotionControl = 0x01;
 constexpr uint32_t kFeedback = 0x02;
@@ -20,6 +20,7 @@ constexpr uint32_t kSetZero = 0x06;
 constexpr uint32_t kReadParameter = 0x11;
 constexpr uint32_t kWriteParameter = 0x12;
 constexpr uint32_t kFaultReport = 0x15;
+constexpr uint32_t kActiveReport = 0x18;
 } // namespace comm
 
 // -----------------------------------------------------------------------------
@@ -27,7 +28,7 @@ constexpr uint32_t kFaultReport = 0x15;
 // -----------------------------------------------------------------------------
 
 // RS01 参数表索引。参数读写命令通过这些 16 bit 地址访问运行模式、
-// 速度/电流/位置目标值、限制值和诊断量。
+// 速度/电流/位置目标值、限制值、诊断量和故障 bitmask。
 namespace param {
 constexpr uint16_t kRunMode = 0x7005;
 constexpr uint16_t kIqRef = 0x7006;
@@ -46,14 +47,17 @@ constexpr uint16_t kVelocityAcceleration = 0x7022;
 constexpr uint16_t kPpVelocityMax = 0x7024;
 constexpr uint16_t kPpAcceleration = 0x7025;
 constexpr uint16_t kReportPeriod = 0x7026;
+constexpr uint16_t kFaultStatus = 0x3022;
+constexpr uint16_t kWarningStatus = 0x3023;
+constexpr uint16_t kDriverFault = 0x3024;
 } // namespace param
 
 // -----------------------------------------------------------------------------
 // 运行模式
 // -----------------------------------------------------------------------------
 
-// run_mode 参数支持的模式值。这里保留 RS01 当前会用到的模式，供 set_mode()
-// 和示例代码直接引用，避免在业务代码里写裸数字。
+// run_mode 参数支持的模式值。
+// 使用这些常量可以避免业务代码里直接写 0/1/2/3/5 这类裸数字。
 namespace mode {
 constexpr int8_t kMotion = 0;
 constexpr int8_t kPositionPp = 1;
@@ -66,8 +70,8 @@ constexpr int8_t kPositionCsp = 5;
 // RS01 物理量范围
 // -----------------------------------------------------------------------------
 
-// RS01 手册给出的物理量范围。运控帧里的位置、速度、力矩、Kp、Kd 会先被限制
-// 在这些范围内，再线性映射到 0~65535 的 16 bit 无符号整数。
+// RS01 手册给出的物理量范围。
+// 运控帧和反馈帧使用这些范围在物理量和 16 bit 无符号整数之间做线性映射。
 constexpr float kPositionMax = 4.0f * 3.14159265358979323846f;
 constexpr float kVelocityMax = 44.0f;
 constexpr float kTorqueMax = 17.0f;
@@ -108,6 +112,30 @@ inline void pack_u16_le(uint8_t *data, uint16_t value) {
   data[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
 }
 
+/**
+ * @brief 按小端序读取 16 bit 无符号整数。
+ *
+ * @param data 至少有 2 字节空间的输入缓冲区。
+ * @return 解析出的 16 bit 数值。
+ */
+inline uint16_t unpack_u16_le(const uint8_t *data) {
+  return static_cast<uint16_t>(data[0]) |
+         (static_cast<uint16_t>(data[1]) << 8);
+}
+
+/**
+ * @brief 按小端序读取 32 bit 无符号整数。
+ *
+ * @param data 至少有 4 字节空间的输入缓冲区。
+ * @return 解析出的 32 bit 数值。
+ */
+inline uint32_t unpack_u32_le(const uint8_t *data) {
+  return static_cast<uint32_t>(data[0]) |
+         (static_cast<uint32_t>(data[1]) << 8) |
+         (static_cast<uint32_t>(data[2]) << 16) |
+         (static_cast<uint32_t>(data[3]) << 24);
+}
+
 // 运控帧和反馈帧中的 16 bit 物理量使用大端序，与参数索引的字节序不同。
 /**
  * @brief 按大端序写入 16 bit 无符号整数。
@@ -118,6 +146,17 @@ inline void pack_u16_le(uint8_t *data, uint16_t value) {
 inline void pack_u16_be(uint8_t *data, uint16_t value) {
   data[0] = static_cast<uint8_t>((value >> 8) & 0xFF);
   data[1] = static_cast<uint8_t>(value & 0xFF);
+}
+
+/**
+ * @brief 按大端序读取 16 bit 无符号整数。
+ *
+ * @param data 至少有 2 字节空间的输入缓冲区。
+ * @return 解析出的 16 bit 数值。
+ */
+inline uint16_t unpack_u16_be(const uint8_t *data) {
+  return (static_cast<uint16_t>(data[0]) << 8) |
+         static_cast<uint16_t>(data[1]);
 }
 
 // float 参数按 IEEE-754 原始字节写入 payload。当前运行环境是常见 x86/Linux 小端序，
