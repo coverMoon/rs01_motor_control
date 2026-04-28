@@ -6,6 +6,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# 编译后的示例可执行文件统一放到项目根目录 bin/，避免和 build/ 中间产物混在一起。
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/bin)
+
 # 核心静态库：包含 Linux SocketCAN 封装，以及 RS01 私有 CAN 协议的打包/解析。
 add_library(rs01_motor
   src/can_socket.cpp
@@ -26,15 +29,41 @@ target_compile_options(rs01_motor
     -Wpedantic
 )
 
-# 面向真实硬件调试的小示例：一个用于读模式，一个用于低速转动测试。
+# 面向真实硬件调试的小示例：读模式、诊断参数打印、交互测试和停机工具。
 add_executable(rs01_read_mode examples/rs01_read_mode.cpp)
 target_link_libraries(rs01_read_mode PRIVATE rs01_motor)
+
+add_executable(rs01_dump_status examples/rs01_dump_status.cpp)
+target_link_libraries(rs01_dump_status PRIVATE rs01_motor)
+
+add_executable(rs01_monitor examples/rs01_monitor.cpp)
+target_link_libraries(rs01_monitor PRIVATE rs01_motor)
+
+add_executable(rs01_active_report examples/rs01_active_report.cpp)
+target_link_libraries(rs01_active_report PRIVATE rs01_motor)
 
 add_executable(rs01_velocity_test examples/rs01_velocity_test.cpp)
 target_link_libraries(rs01_velocity_test PRIVATE rs01_motor)
 
+add_executable(rs01_current_test examples/rs01_current_test.cpp)
+target_link_libraries(rs01_current_test PRIVATE rs01_motor)
+
+add_executable(rs01_motion_test examples/rs01_motion_test.cpp)
+target_link_libraries(rs01_motion_test PRIVATE rs01_motor)
+
+add_executable(rs01_position_pp_test examples/rs01_position_pp_test.cpp)
+target_link_libraries(rs01_position_pp_test PRIVATE rs01_motor)
+
+add_executable(rs01_position_csp_test examples/rs01_position_csp_test.cpp)
+target_link_libraries(rs01_position_csp_test PRIVATE rs01_motor)
+
+add_executable(rs01_stop examples/rs01_stop.cpp)
+target_link_libraries(rs01_stop PRIVATE rs01_motor)
+
 # 简单安装规则，便于后续把库、示例程序和头文件安装到指定 prefix。
-install(TARGETS rs01_motor rs01_read_mode rs01_velocity_test
+install(TARGETS rs01_motor rs01_read_mode rs01_dump_status rs01_velocity_test
+                rs01_monitor rs01_active_report rs01_current_test rs01_motion_test
+                rs01_position_pp_test rs01_position_csp_test rs01_stop
   ARCHIVE DESTINATION lib
   RUNTIME DESTINATION bin
 )
