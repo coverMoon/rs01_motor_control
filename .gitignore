@@ -1,0 +1,43 @@
+# Build outputs
+build/
+cmake-build-*/
+out/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+DartConfiguration.tcl
+Testing/
+install_manifest.txt
+
+# Compiled objects and binaries
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.o
+*.obj
+*.exe
+*.out
+*.app
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+.cache/
+
+# Editor and local tool state
+.vscode/
+.idea/
+.codex
+
+# OS metadata
+.DS_Store
+Thumbs.db
