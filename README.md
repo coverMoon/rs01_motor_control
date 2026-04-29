@@ -1,10 +1,12 @@
 # RS01 电机控制库
 
-RS01 专用 Linux SocketCAN 底层控制库和调试工具集。
+RS01 专用 Linux SocketCAN 底层驱动库，并附带一组现场调试工具。
+
+本仓库的核心是 C++ 驱动库。`bin/` 下的可执行程序主要用于验证通信、调试电机和提供 API 使用参考；实际项目集成时，推荐直接使用 `rs01::Rs01Motor`。
 
 当前项目只面向 RobStride RS01，使用手册第 4 章私有 CAN 扩展帧协议，不做 RS02、CanOpen、MIT 标准帧抽象。
 
-固定 RS01 范围：
+RS01 物理量范围：
 
 - 位置：`+-4*pi rad`
 - 速度：`+-44 rad/s`
@@ -13,14 +15,11 @@ RS01 专用 Linux SocketCAN 底层控制库和调试工具集。
 - 阻尼系数 Kd：`0~5`
 - 电流：`+-23 A`
 
-编译后的示例工具统一生成到项目根目录的 `bin/`。
-
 ## 快速开始
 
 编译：
 
 ```bash
-cd /home/windnotebook/PROJECT/RoboCon/Tools/rs01_motor_control
 cmake -S . -B build
 cmake --build build -j
 ```
@@ -31,36 +30,363 @@ cmake --build build -j
 sudo ./scripts/setup_can.sh
 ```
 
-只读连通性测试：
+用只读工具确认通信：
 
 ```bash
 ./bin/rs01_read_mode can0 1
 ./bin/rs01_dump_status can0 1
 ```
 
-调试后停机：
+在自己的程序里使用驱动库：
+
+```cpp
+#include "rs01_motor/protocol.h"
+#include "rs01_motor/rs01_motor.h"
+
+int main() {
+  rs01::Rs01Motor motor("can0", 1);
+
+  auto mode = motor.read_param_u8(rs01::param::kRunMode);
+  if (!mode) {
+    return 1;
+  }
+
+  motor.velocity_control(0.5f, 1.0f, 2.0f);
+  motor.write_param_float(rs01::param::kSpeedRef, 0.0f);
+  motor.disable(false);
+  return 0;
+}
+```
+
+## 库结构
+
+对外主要接口在 `include/rs01_motor/` 下：
+
+| 文件 | 作用 | 使用建议 |
+|---|---|---|
+| `rs01_motor/rs01_motor.h` | 单个 RS01 电机的高级封装 | 业务代码优先使用 |
+| `rs01_motor/protocol.h` | 通信类型、参数索引、运行模式和物理范围常量 | 配合 `Rs01Motor` 使用 |
+| `rs01_motor/can_socket.h` | Linux SocketCAN RAW socket 的 RAII 封装 | 一般不需要直接使用 |
+
+`Rs01Motor` 对象绑定一个 CAN 接口和一个电机 ID：
+
+```cpp
+rs01::Rs01Motor motor("can0", 1);
+```
+
+如果需要指定主机 ID，可以传第三个参数。默认主机 ID 是 `0xff`：
+
+```cpp
+rs01::Rs01Motor motor("can0", 1, 0xfd);
+```
+
+## API 使用流程
+
+常规控制程序建议按下面顺序组织：
+
+1. 配置并打开 CAN 接口。
+2. 创建 `rs01::Rs01Motor`。
+3. 读取 `run_mode` 或 `mech_pos`，确认通信和初始状态。
+4. 切换到目标控制模式。
+5. 设置限制参数，例如限流、速度限制、加速度。
+6. 使能电机。
+7. 写入目标值，或周期性发送控制帧。
+8. 退出前把目标清零或保持当前位置。
+9. 调用 `disable(false)` 失能电机。
+
+库中部分封装函数已经包含了切模式、设置限制和使能流程。例如 `velocity_control()`、`current_control()`、`position_pp_control()` 和 `position_csp_control()` 都会自动切换模式并使能；`motion_control()` 只负责发送运控帧，调用前需要手动 `set_mode()` 和 `enable()`。
+
+## 参数读写
+
+RS01 的运行模式、目标值、限制值和诊断量都通过参数索引访问。索引常量在 `rs01::param` 命名空间中。
+
+读取运行模式：
+
+```cpp
+auto mode = motor.read_param_u8(rs01::param::kRunMode);
+if (mode) {
+  // *mode 是当前 run_mode
+}
+```
+
+读取当前位置、速度、电流和母线电压：
+
+```cpp
+auto position = motor.read_param_float(rs01::param::kMechPos);
+auto velocity = motor.read_param_float(rs01::param::kMechVel);
+auto current = motor.read_param_float(rs01::param::kIqFiltered);
+auto voltage = motor.read_param_float(rs01::param::kVbus);
+```
+
+写入 float 参数：
+
+```cpp
+motor.write_param_float(rs01::param::kLimitCurrent, 1.0f);
+motor.write_param_float(rs01::param::kSpeedRef, 0.5f);
+```
+
+读取故障位：
+
+```cpp
+auto fault = motor.read_param_u32(rs01::param::kFaultStatus);
+if (fault) {
+  auto descriptions = rs01::Rs01Motor::describe_fault_bits(*fault);
+}
+```
+
+参数读取接口返回 `std::optional<T>`。返回空值表示在超时时间内没有收到匹配响应，业务代码应该把它当成通信失败处理。
+
+## 速度模式
+
+速度模式适合让电机按目标速度连续转动。推荐初次测试使用小速度、小限流和小加速度。
+
+`velocity_control()` 会完成下面流程：
+
+1. 切换到速度模式。
+2. 写入限流 `limit_current`。
+3. 写入加速度 `velocity_acc`。
+4. 使能电机。
+5. 写入速度目标 `speed_ref`。
+
+示例：
+
+```cpp
+rs01::Rs01Motor motor("can0", 1);
+
+motor.velocity_control(0.5f, 1.0f, 2.0f);
+
+// 运行中可以继续修改速度目标。
+motor.write_param_float(rs01::param::kSpeedRef, 0.2f);
+motor.write_param_float(rs01::param::kSpeedRef, 0.0f);
+
+motor.disable(false);
+```
+
+退出前建议先把 `speed_ref` 写回 `0.0f`，等待短时间后再失能。
+
+## 电流模式
+
+电流模式通过 `iq_ref` 控制电流，电流会直接影响输出力矩。初次测试应使用很小电流，并确保电机固定可靠。
+
+`current_control()` 会切换到电流模式、使能电机并写入目标电流：
+
+```cpp
+rs01::Rs01Motor motor("can0", 1);
+
+motor.current_control(0.1f);
+
+// 运行中可以修改目标电流。
+motor.write_param_float(rs01::param::kIqRef, 0.0f);
+
+motor.disable(false);
+```
+
+退出前建议先把 `iq_ref` 写回 `0.0f`。
+
+## 运控模式
+
+运控模式使用 type-1 控制帧，一帧同时包含：
+
+- 前馈力矩 `torque`
+- 目标位置 `position`
+- 目标速度 `velocity`
+- 位置刚度 `Kp`
+- 速度阻尼 `Kd`
+
+这个模式适合需要上位机周期性发送控制量的场景。`motion_control()` 只发送控制帧，不会自动切模式或使能，所以调用顺序必须明确：
+
+```cpp
+rs01::Rs01Motor motor("can0", 1);
+
+motor.set_mode(rs01::mode::kMotion);
+motor.enable();
+
+while (running) {
+  motor.motion_control(
+      0.0f,  // torque, Nm
+      0.0f,  // position, rad
+      0.0f,  // velocity, rad/s
+      1.0f,  // Kp
+      0.5f   // Kd
+  );
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+}
+
+for (int i = 0; i < 20; ++i) {
+  motor.motion_control(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+}
+
+motor.disable(false);
+```
+
+运控模式的关键是周期性发送。停止时建议先连续发送若干帧零力矩、零刚度、零阻尼的安全帧，再失能。
+
+## PP 位置模式
+
+PP 位置模式适合“给一个目标位置，让电机按内部规划运动过去”的场景。上位机不需要持续刷新轨迹点。
+
+`position_pp_control()` 会完成：
+
+1. 切换到 PP 位置模式。
+2. 设置最大速度 `pp_velocity_max`。
+3. 设置加速度 `pp_acceleration`。
+4. 使能电机。
+5. 写入目标位置 `loc_ref`。
+
+建议先读取当前位置，把当前位置作为初始目标，避免启动瞬间跳变：
+
+```cpp
+rs01::Rs01Motor motor("can0", 1);
+
+auto current_position = motor.read_param_float(rs01::param::kMechPos);
+if (!current_position) {
+  return 1;
+}
+
+motor.position_pp_control(*current_position, 0.5f, 1.0f);
+
+// 确认安全后，再写入真正目标。
+motor.write_param_float(rs01::param::kLocRef, *current_position + 0.2f);
+
+motor.disable(false);
+```
+
+## CSP 位置模式
+
+CSP 位置模式适合上位机自己生成位置轨迹，并周期性下发 `loc_ref` 的场景。和 PP 不同，CSP 需要持续刷新目标位置。
+
+`position_csp_control()` 会切换到 CSP 位置模式、设置速度限制、使能电机并写入初始位置：
+
+```cpp
+rs01::Rs01Motor motor("can0", 1);
+
+auto current_position = motor.read_param_float(rs01::param::kMechPos);
+if (!current_position) {
+  return 1;
+}
+
+float target = *current_position;
+motor.position_csp_control(target, 0.5f);
+
+while (running) {
+  target += 0.001f;
+  motor.write_param_float(rs01::param::kLocRef, target);
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+}
+
+motor.disable(false);
+```
+
+CSP 的安全重点是：启动时从当前位置开始，运行中按固定周期刷新，目标变化不要突变。
+
+## PP 和 CSP 的区别
+
+| 模式 | 目标写入方式 | 轨迹来源 | 适合场景 |
+|---|---|---|---|
+| PP | 写一次目标位置 | 电机内部规划 | 简单点到点位置控制 |
+| CSP | 周期性写目标位置 | 上位机生成轨迹 | 多轴同步、外部轨迹跟踪 |
+
+如果只是让单个电机转到某个位置，优先使用 PP。如果上位机需要严格控制每个周期的位置目标，使用 CSP。
+
+## 主动上报和反馈解析
+
+开启主动上报后，电机会按周期主动发送反馈帧。驱动库可以配置开关，也可以解析反馈帧。
+
+开启主动上报：
+
+```cpp
+bool acknowledged = motor.set_active_report(true);
+```
+
+关闭主动上报：
+
+```cpp
+bool acknowledged = motor.set_active_report(false);
+```
+
+当前实测设备在关闭主动上报时会执行关闭，但不一定返回配置应答。因此 `set_active_report(false)` 返回 `false` 不一定表示关闭失败，也可能只是没有收到应答。
+
+主动读取一帧反馈：
+
+```cpp
+auto feedback = motor.read_feedback(100);
+if (feedback) {
+  float position = feedback->position;
+  float velocity = feedback->velocity;
+  float torque = feedback->torque;
+  float temperature = feedback->temperature;
+}
+```
+
+如果业务代码自己接收原始 `can_frame`，可以使用静态函数解析：
+
+```cpp
+rs01::Feedback feedback = rs01::Rs01Motor::parse_feedback(frame);
+```
+
+## 故障处理
+
+反馈帧中带有 6 bit 简略故障状态，可以直接解析：
+
+```cpp
+auto feedback = motor.read_feedback(100);
+if (feedback) {
+  auto items = rs01::Rs01Motor::describe_feedback_fault(feedback->fault);
+}
+```
+
+完整故障和预警位建议通过参数读取：
+
+```cpp
+auto fault = motor.read_param_u32(rs01::param::kFaultStatus);
+auto warning = motor.read_param_u32(rs01::param::kWarningStatus);
+
+if (fault) {
+  auto items = rs01::Rs01Motor::describe_fault_bits(*fault);
+}
+
+if (warning) {
+  auto items = rs01::Rs01Motor::describe_warning_bits(*warning);
+}
+```
+
+调试时也可以直接运行：
+
+```bash
+./bin/rs01_dump_status can0 1
+```
+
+## 停机建议
+
+不同模式退出前应先让目标值回到安全状态：
+
+| 模式 | 建议停机动作 |
+|---|---|
+| 速度模式 | `speed_ref = 0.0f`，短暂等待，`disable(false)` |
+| 电流模式 | `iq_ref = 0.0f`，短暂等待，`disable(false)` |
+| 运控模式 | 连续发送若干帧零力矩、零刚度、零阻尼控制帧，`disable(false)` |
+| PP 位置模式 | 必要时写当前位置保持，`disable(false)` |
+| CSP 位置模式 | 停止轨迹刷新前写当前位置或保持目标，`disable(false)` |
+
+也可以使用停机工具做现场兜底：
 
 ```bash
 ./bin/rs01_stop can0 1
-```
-
-如果不知道电机 ID，可以先扫描：
-
-```bash
-./scripts/scan_rs01_ids.sh can0 1 127
 ```
 
 ## 安全说明
 
 - RS01 需要单独供电，USB-CAN 不给电机供电。
 - 初次测试先用小速度、小电流、小位移和低刚度。
-- 运行控制类工具前，确认电机固定方式、负载、供电、机械限位和急停手段。
-- `rs01_velocity_test`、`rs01_current_test`、`rs01_motion_test`、`rs01_position_pp_test`、`rs01_position_csp_test` 都会使能电机。
-- `rs01_read_mode`、`rs01_dump_status`、`rs01_monitor`、`scan_rs01_ids.sh` 不会使能电机。
-- `rs01_active_report` 会写主动上报配置，但不会使能电机或写运动目标。
+- 运行控制类程序前，确认电机固定方式、负载、供电、机械限位和急停手段。
+- `velocity_control()`、`current_control()`、`position_pp_control()`、`position_csp_control()` 都会使能电机。
+- `set_mode()` 会先失能再写入运行模式。
+- `motion_control()` 不会自动切模式、不自动使能，调用方必须先执行 `set_mode(rs01::mode::kMotion)` 和 `enable()`。
 - 如果没有回包，先检查电源、CAN_H/CAN_L、GND、波特率、ID 和终端电阻。
 
-## 编译
+## 编译和集成
 
 常规编译：
 
@@ -69,18 +395,26 @@ cmake -S . -B build
 cmake --build build -j
 ```
 
-清理后重新编译：
-
-```bash
-rm -rf build
-cmake -S . -B build
-cmake --build build -j
-```
-
-查看生成的工具：
+编译后的示例工具统一生成到项目根目录的 `bin/`：
 
 ```bash
 ls bin
+```
+
+如果在本仓库里新增自己的程序，可以在 `CMakeLists.txt` 中链接 `rs01_motor`：
+
+```cmake
+add_executable(my_rs01_app src/my_rs01_app.cpp)
+target_link_libraries(my_rs01_app PRIVATE rs01_motor)
+```
+
+如果把本库作为子目录集成到其他 CMake 工程：
+
+```cmake
+add_subdirectory(path/to/rs01_motor_control)
+
+add_executable(my_rs01_app src/my_rs01_app.cpp)
+target_link_libraries(my_rs01_app PRIVATE rs01_motor)
 ```
 
 ## CAN 配置
@@ -98,8 +432,6 @@ sudo ./scripts/setup_can.sh
 ```bash
 sudo ./scripts/setup_can.sh can1 1000000
 ```
-
-脚本内部等价于执行“先关闭接口、设置波特率、打开接口、显示详细状态”。
 
 手动配置流程：
 
@@ -168,7 +500,9 @@ dmesg | tail -50
 lsmod | grep -E 'can|peak|gs_usb'
 ```
 
-## 工具总览
+## 调试工具总览
+
+这些工具既可以用于现场调试，也可以作为库 API 的参考实现。
 
 | 工具 | 类型 | 写参数 | 使能电机 | 用途 |
 |---|---|---:|---:|---|
