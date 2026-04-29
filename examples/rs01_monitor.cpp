@@ -75,6 +75,25 @@ std::string join_faults(const std::vector<std::string> &descriptions) {
 }
 
 /**
+ * @brief 打印单行实时状态，下一帧到来时在原位置覆盖。
+ *
+ * @param motor_id 当前反馈帧来源电机 ID。
+ * @param feedback 解析后的反馈数据。
+ * @param fault_text 故障状态文本。
+ */
+void print_status_line(uint8_t motor_id, const rs01::Feedback &feedback,
+                       const std::string &fault_text) {
+  // "\r" 回到行首，"\033[2K" 清空当前行，避免新内容比旧内容短时留下残影。
+  std::cout << "\r\033[2K" << std::left << std::setw(5)
+            << static_cast<int>(motor_id) << std::setw(11) << std::fixed
+            << std::setprecision(4) << feedback.position << std::setw(11)
+            << feedback.velocity << std::setw(11) << feedback.torque
+            << std::setw(9) << std::setprecision(1) << feedback.temperature
+            << std::setw(8) << mode_name(feedback.mode) << fault_text
+            << std::flush;
+}
+
+/**
  * @brief 从扩展帧 ID 中解析通信类型。
  *
  * @param frame 输入 CAN 帧。
@@ -135,7 +154,7 @@ int main(int argc, char **argv) {
       std::cout << ", motor_id=all";
     }
     std::cout << "\n";
-
+    std::cout << "等待反馈帧，按 Ctrl+C 退出...\n";
     std::cout << std::left << std::setw(5) << "id" << std::setw(11) << "pos"
               << std::setw(11) << "vel" << std::setw(11) << "torque"
               << std::setw(9) << "temp" << std::setw(8) << "mode"
@@ -162,13 +181,10 @@ int main(int argc, char **argv) {
       const rs01::Feedback feedback = rs01::Rs01Motor::parse_feedback(frame);
       const auto faults = rs01::Rs01Motor::describe_feedback_fault(feedback.fault);
 
-      std::cout << std::left << std::setw(5) << static_cast<int>(source_id)
-                << std::setw(11) << std::fixed << std::setprecision(4)
-                << feedback.position << std::setw(11) << feedback.velocity
-                << std::setw(11) << feedback.torque << std::setw(9)
-                << std::setprecision(1) << feedback.temperature << std::setw(8)
-                << mode_name(feedback.mode) << join_faults(faults) << "\n";
+      print_status_line(source_id, feedback, join_faults(faults));
     }
+
+    std::cout << "\n";
   } catch (const std::exception &error) {
     std::cerr << error.what() << "\n";
     return 1;
