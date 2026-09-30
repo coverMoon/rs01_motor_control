@@ -60,10 +60,14 @@ target_link_libraries(rs01_position_csp_test PRIVATE rs01_motor)
 add_executable(rs01_stop examples/rs01_stop.cpp)
 target_link_libraries(rs01_stop PRIVATE rs01_motor)
 
+add_executable(rs01_change_id examples/rs01_change_id.cpp)
+target_link_libraries(rs01_change_id PRIVATE rs01_motor)
+
 # 简单安装规则，便于后续把库、示例程序和头文件安装到指定 prefix。
 install(TARGETS rs01_motor rs01_read_mode rs01_dump_status rs01_velocity_test
                 rs01_monitor rs01_active_report rs01_current_test rs01_motion_test
                 rs01_position_pp_test rs01_position_csp_test rs01_stop
+                rs01_change_id
   ARCHIVE DESTINATION lib
   RUNTIME DESTINATION bin
 )

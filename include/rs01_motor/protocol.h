@@ -17,6 +17,7 @@ constexpr uint32_t kFeedback = 0x02;
 constexpr uint32_t kEnable = 0x03;
 constexpr uint32_t kDisable = 0x04;
 constexpr uint32_t kSetZero = 0x06;
+constexpr uint32_t kSetCanId = 0x07;
 constexpr uint32_t kReadParameter = 0x11;
 constexpr uint32_t kWriteParameter = 0x12;
 constexpr uint32_t kFaultReport = 0x15;
@@ -94,8 +95,8 @@ constexpr float kCurrentMax = 23.0f;
  * @param target_id 目标电机 ID。
  * @return 未附加 CAN_EFF_FLAG 的扩展帧 ID。
  */
-inline uint32_t make_can_id(uint32_t communication_type, uint16_t extra_data,
-                            uint8_t target_id) {
+inline constexpr uint32_t make_can_id(uint32_t communication_type,
+                                      uint16_t extra_data, uint8_t target_id) {
   return (communication_type << 24) | (static_cast<uint32_t>(extra_data) << 8) |
          target_id;
 }

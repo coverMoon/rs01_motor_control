@@ -56,6 +56,10 @@ public:
   // 将当前机械位置设置为零点。
   void set_zero();
 
+  // 修改 CAN ID（1..127）；收到类型 0 广播应答后更新本对象的 motor_id。
+  // 无应答返回 false，电机侧可能已经改号，调用方应分别检查新旧 ID。
+  bool change_id(uint8_t new_id, int timeout_ms = 300);
+
   // 开启或关闭主动上报。返回 true 表示收到应答；false 表示命令已发送但无应答。
   bool set_active_report(bool enable, int timeout_ms = 100);
 

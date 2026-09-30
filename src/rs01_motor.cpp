@@ -65,6 +65,48 @@ void Rs01Motor::set_zero() {
   expect_status();
 }
 
+bool Rs01Motor::change_id(uint8_t new_id, int timeout_ms) {
+  if (new_id == 0 || new_id > 127 || new_id == motor_id_) {
+    throw std::invalid_argument("RS01 new CAN ID must be 1..127 and differ from the old ID");
+  }
+  if (timeout_ms <= 0) {
+    throw std::invalid_argument("timeout_ms must be positive");
+  }
+
+  // 类型 7：bit23..16 是新 ID，bit15..8 是主机 ID，bit7..0 是旧 ID。
+  const uint16_t extra_data =
+      (static_cast<uint16_t>(new_id) << 8) | host_id_;
+  uint8_t data[8] {};
+  socket_.send_extended(make_can_id(comm::kSetCanId, extra_data, motor_id_),
+                        data, 8);
+
+  // 手册规定应答为类型 0 广播：bit15..8 携带电机当前 ID，低字节为 0xFE。
+  using clock = std::chrono::steady_clock;
+  const auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
+  while (clock::now() < deadline) {
+    const auto remaining_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - clock::now()).count();
+    can_frame frame {};
+    if (!socket_.receive(frame, static_cast<int>(
+            std::max<int64_t>(1, remaining_ms)))) {
+      break;
+    }
+    if ((frame.can_id & CAN_EFF_FLAG) == 0 || frame.can_dlc != 8 ||
+        frame_communication_type(frame) != 0) {
+      continue;
+    }
+    const uint32_t response_id = frame.can_id & CAN_EFF_MASK;
+    if ((response_id & 0xFFU) != 0xFEU ||
+        ((response_id >> 8) & 0xFFU) != new_id) {
+      continue;
+    }
+    motor_id_ = new_id;
+    return true;
+  }
+  return false;
+}
+
 /**
  * @brief 开启或关闭电机主动上报。
  *
@@ -544,6 +586,13 @@ std::optional<can_frame> Rs01Motor::receive_matching_frame(
       continue;
     }
 
+    // 仅接收发往本主机、由本电机返回的应答。
+    const uint32_t response_id = frame.can_id & CAN_EFF_MASK;
+    if (static_cast<uint8_t>(response_id) != host_id_ ||
+        static_cast<uint8_t>(response_id >> 8) != motor_id_) {
+      continue;
+    }
+
     const uint8_t received_type = frame_communication_type(frame);
     if (received_type == comm::kFaultReport) {
       throw std::runtime_error(format_fault_report(parse_fault_report_frame(frame)));
@@ -558,6 +607,10 @@ std::optional<can_frame> Rs01Motor::receive_matching_frame(
       }
       if (unpack_u16_le(&frame.data[0]) != *parameter_index) {
         continue;
+      }
+      if (communication_type == comm::kReadParameter &&
+          ((response_id >> 16) & 0xFFU) != 0) {
+        throw std::runtime_error("RS01 parameter read failed");
       }
     }
 

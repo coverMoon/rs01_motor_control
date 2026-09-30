@@ -511,6 +511,7 @@ lsmod | grep -E 'can|peak|gs_usb'
 | `rs01_monitor` | 监听 | 否 | 否 | 被动监听反馈帧/主动上报帧 |
 | `scan_rs01_ids.sh` | 只读 | 否 | 否 | 扫描可响应的电机 ID |
 | `rs01_active_report` | 配置 | 是 | 否 | 开启或关闭主动上报 |
+| `rs01_change_id` | 配置 | 否 | 否 | 检查旧/新 ID，修改后复读确认 |
 | `rs01_velocity_test` | 控制 | 是 | 是 | 速度模式交互测试 |
 | `rs01_current_test` | 控制 | 是 | 是 | 电流模式交互测试 |
 | `rs01_motion_test` | 控制 | 是 | 是 | 运控模式交互测试 |
@@ -608,6 +609,23 @@ lsmod | grep -E 'can|peak|gs_usb'
 ```
 
 ## 配置工具
+
+### `rs01_change_id`
+
+电机失能并停止运动后再修改 CAN ID，允许范围 1～127。工具先确认旧 ID 可读、新 ID 无响应，
+随后发送私有 CAN 通信类型 7，并用新 ID 读取 `run_mode` 确认结果。
+它不会使能电机。目标 ID 的无响应只能说明当前未检测到设备，不能保证
+总线上不存在断电或使用其他协议的同 ID 设备。
+
+```bash
+./bin/rs01_change_id <CAN接口> <旧ID> <新ID> [主机ID]
+./bin/rs01_change_id can0 1 2
+./scripts/change_rs01_id.sh can0 1 2
+```
+
+改号后，后续工具需使用新 ID。C++ 接口为 `rs01::Rs01Motor::change_id(new_id)`；
+收到类型 0 广播应答时返回 `true` 并更新该对象绑定的 ID。若未收到广播，
+仍应分别读取新旧 ID 确认，避免盲目重发。
 
 ### `rs01_active_report`
 
@@ -834,7 +852,6 @@ sudo ip link set can0 down
 后续可选增强：
 
 - 保存参数类型 22
-- CAN ID 修改和安全确认流程
 - 版本读取、设备 ID 读取
 - ROS2 node 封装
 
